@@ -9,7 +9,7 @@ st.title("PO Tag Labeler")
 st.write(
     "Upload the order Excel file and the shipping-label PDF. The app matches "
     "each label's REF/PO number to the Excel Cust Po No and prints the matching "
-    "Tag NO on the label."
+    "tag number on the label."
 )
 
 left, right = st.columns(2)
@@ -22,11 +22,11 @@ settings_col1, settings_col2 = st.columns(2)
 with settings_col1:
     position = st.selectbox(
         "Tag position",
-        options=["top-right", "top-left", "top-center"],
+        options=["auto-safe-top", "top-right", "top-left", "top-center"],
         index=0,
     )
 with settings_col2:
-    font_size = st.slider("Tag font size", min_value=10, max_value=28, value=18)
+    font_size = st.slider("Number font size", min_value=7, max_value=16, value=10)
 
 if st.button("Process Labels", type="primary", use_container_width=True):
     if not excel_file or not pdf_file:

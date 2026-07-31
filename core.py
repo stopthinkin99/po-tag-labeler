@@ -43,7 +43,6 @@ def load_po_tag_map(excel_bytes: bytes) -> dict[str, list[str]]:
         if not rows:
             continue
 
-        # Search the first 20 rows for a header row.
         for row_index, row in enumerate(rows[:20]):
             normalized = [normalize_header(cell) for cell in row]
             po_col = next((i for i, h in enumerate(normalized) if h in PO_HEADER_CANDIDATES), None)
@@ -76,8 +75,6 @@ def load_po_tag_map(excel_bytes: bytes) -> dict[str, list[str]]:
 
 
 def extract_po_from_page_text(text: str) -> str | None:
-    # Current FedEx labels store the customer PO in REF. Some other labels may
-    # have it in PO, so both are supported.
     patterns = [
         r"\bREF\s*:\s*([A-Z0-9][A-Z0-9\-/]*)",
         r"\bPO\s*(?:NO|NUMBER|#)?\s*:\s*([A-Z0-9][A-Z0-9\-/]*)",
@@ -97,40 +94,72 @@ class PageResult:
     status: str
 
 
+def _overlap_area(a: fitz.Rect, b: fitz.Rect) -> float:
+    inter = a & b
+    if inter.is_empty:
+        return 0.0
+    return max(0.0, inter.width) * max(0.0, inter.height)
+
+
+def _find_safe_top_position(page: fitz.Page, text: str, font_size: float) -> tuple[float, float]:
+    """Find a small blank spot near the top without covering existing PDF text."""
+    page_rect = page.rect
+    text_width = fitz.get_text_length(text, fontname="helv", fontsize=font_size)
+    pad_x, pad_y = 3, 2
+    box_w = text_width + pad_x * 2
+    box_h = font_size + pad_y * 2
+
+    occupied = []
+    for word in page.get_text("words"):
+        x0, y0, x1, y1 = word[:4]
+        occupied.append(fitz.Rect(x0 - 1, y0 - 1, x1 + 1, y1 + 1))
+
+    # Prefer the upper middle, then move across/down until a clear spot is found.
+    x_centers = [0.50, 0.60, 0.40, 0.70, 0.30, 0.80, 0.20]
+    y_values = [4, 12, 20, 28, 36, 44, 52, 60, 68, 76, 84]
+    best: tuple[float, float, float] | None = None
+
+    for y0 in y_values:
+        for center in x_centers:
+            x0 = page_rect.width * center - box_w / 2
+            x0 = min(max(4, x0), page_rect.width - box_w - 4)
+            candidate = fitz.Rect(x0, y0, x0 + box_w, y0 + box_h)
+            overlap = sum(_overlap_area(candidate, rect) for rect in occupied)
+            # Slight preference for higher positions and the horizontal center.
+            score = overlap * 1000 + y0 + abs(center - 0.5) * 10
+            if best is None or score < best[0]:
+                best = (score, x0 + pad_x, y0 + pad_y + font_size)
+            if overlap == 0:
+                return x0 + pad_x, y0 + pad_y + font_size
+
+    assert best is not None
+    return best[1], best[2]
+
+
 def _stamp_tag(
     page: fitz.Page,
     tags: Iterable[str],
-    position: str = "top-right",
-    font_size: int = 18,
+    position: str = "auto-safe-top",
+    font_size: int = 10,
 ) -> None:
-    tag_text = "TAG NO: " + ", ".join(tags)
+    # Print only the tag value(s), not "TAG NO:" and not a large border box.
+    tag_text = ", ".join(tags)
     page_rect = page.rect
-    box_width = min(max(170, 11 * len(tag_text)), page_rect.width - 24)
-    box_height = max(34, font_size + 16)
-    margin = 12
+    actual_size = max(7, min(font_size, 16))
+    text_width = fitz.get_text_length(tag_text, fontname="helv", fontsize=actual_size)
+    margin = 6
 
-    if position == "top-left":
-        x0 = margin
-    elif position == "top-center":
-        x0 = (page_rect.width - box_width) / 2
+    if position == "auto-safe-top":
+        text_x, text_y = _find_safe_top_position(page, tag_text, actual_size)
     else:
-        x0 = page_rect.width - box_width - margin
+        if position == "top-left":
+            text_x = margin
+        elif position == "top-center":
+            text_x = (page_rect.width - text_width) / 2
+        else:
+            text_x = page_rect.width - text_width - margin
+        text_y = margin + actual_size
 
-    y0 = margin
-    rect = fitz.Rect(x0, y0, x0 + box_width, y0 + box_height)
-
-    # White background keeps the tag readable without touching barcodes lower
-    # on the shipping label.
-    page.draw_rect(rect, color=(0, 0, 0), fill=(1, 1, 1), width=1.2, overlay=True)
-    text_width = fitz.get_text_length(tag_text, fontname="helv", fontsize=font_size)
-    usable_width = rect.width - 12
-    actual_size = font_size
-    if text_width > usable_width:
-        actual_size = max(8, font_size * usable_width / text_width)
-        text_width = fitz.get_text_length(tag_text, fontname="helv", fontsize=actual_size)
-
-    text_x = rect.x0 + max(6, (rect.width - text_width) / 2)
-    text_y = rect.y0 + (rect.height + actual_size) / 2 - 3
     page.insert_text(
         (text_x, text_y),
         tag_text,
@@ -144,8 +173,8 @@ def _stamp_tag(
 def process_pdf(
     pdf_bytes: bytes,
     mapping: dict[str, list[str]],
-    position: str = "top-right",
-    font_size: int = 18,
+    position: str = "auto-safe-top",
+    font_size: int = 10,
 ) -> tuple[bytes, list[PageResult]]:
     document = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: list[PageResult] = []
