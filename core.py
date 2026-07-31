@@ -15,7 +15,7 @@ PO_HEADER_CANDIDATES = {
     "customer po number", "po no", "po number",
 }
 TAG_HEADER_CANDIDATES = {
-    "tag no", "tag number", "tag", "tag #",
+    "tag no", "tag number", "tag", "tag #", "ppl no", "sr no", "serial no",
 }
 
 
