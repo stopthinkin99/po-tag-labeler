@@ -15,8 +15,12 @@ PO_HEADER_CANDIDATES = {
     "customer po number", "po no", "po number",
 }
 TAG_HEADER_CANDIDATES = {
-    "tag no", "tag number", "tag", "tag #", "ppl no", "sr no", "serial no",
+    "tag no", "tag number", "tag", "tag #",
 }
+
+
+BOLD_FONT = "Helvetica-Bold"
+NORMAL_FONT = "Helvetica"
 
 
 def normalize_header(value: object) -> str:
@@ -101,20 +105,15 @@ def _overlap_area(a: fitz.Rect, b: fitz.Rect) -> float:
     return max(0.0, inter.width) * max(0.0, inter.height)
 
 
-def _find_safe_top_position(page: fitz.Page, text: str, font_size: float) -> tuple[float, float]:
+def _find_safe_top_box(page: fitz.Page, box_w: float, box_h: float) -> tuple[float, float]:
     """Find a small blank spot near the top without covering existing PDF text."""
     page_rect = page.rect
-    text_width = fitz.get_text_length(text, fontname="helv", fontsize=font_size)
-    pad_x, pad_y = 3, 2
-    box_w = text_width + pad_x * 2
-    box_h = font_size + pad_y * 2
 
     occupied = []
     for word in page.get_text("words"):
         x0, y0, x1, y1 = word[:4]
         occupied.append(fitz.Rect(x0 - 1, y0 - 1, x1 + 1, y1 + 1))
 
-    # Prefer the upper middle, then move across/down until a clear spot is found.
     x_centers = [0.50, 0.60, 0.40, 0.70, 0.30, 0.80, 0.20]
     y_values = [4, 12, 20, 28, 36, 44, 52, 60, 68, 76, 84]
     best: tuple[float, float, float] | None = None
@@ -125,15 +124,46 @@ def _find_safe_top_position(page: fitz.Page, text: str, font_size: float) -> tup
             x0 = min(max(4, x0), page_rect.width - box_w - 4)
             candidate = fitz.Rect(x0, y0, x0 + box_w, y0 + box_h)
             overlap = sum(_overlap_area(candidate, rect) for rect in occupied)
-            # Slight preference for higher positions and the horizontal center.
             score = overlap * 1000 + y0 + abs(center - 0.5) * 10
             if best is None or score < best[0]:
-                best = (score, x0 + pad_x, y0 + pad_y + font_size)
+                best = (score, x0, y0)
             if overlap == 0:
-                return x0 + pad_x, y0 + pad_y + font_size
+                return x0, y0
 
     assert best is not None
     return best[1], best[2]
+
+
+def _remove_old_tag_box(page: fitz.Page) -> None:
+    """Remove an older large 'TAG NO' stamp if the input PDF already has one."""
+    matches = []
+    for needle in ("TAG NO:", "TAG NO", "TAG"):
+        try:
+            matches.extend(page.search_for(needle))
+        except Exception:
+            pass
+
+    candidates = [r for r in matches if r.y0 < 120]
+    if not candidates:
+        return
+
+    rect = candidates[0]
+    for r in candidates[1:]:
+        rect |= r
+
+    cleanup = fitz.Rect(
+        max(page.rect.x0, rect.x0 - 85),
+        max(page.rect.y0, rect.y0 - 18),
+        min(page.rect.x1, rect.x1 + 85),
+        min(page.rect.y1, rect.y1 + 20),
+    )
+    page.draw_rect(
+        cleanup,
+        color=(1, 1, 1),
+        fill=(1, 1, 1),
+        width=0,
+        overlay=True,
+    )
 
 
 def _stamp_tag(
@@ -142,29 +172,49 @@ def _stamp_tag(
     position: str = "auto-safe-top",
     font_size: int = 10,
 ) -> None:
-    # Print only the tag value(s), not "TAG NO:" and not a large border box.
     tag_text = ", ".join(tags)
     page_rect = page.rect
     actual_size = max(7, min(font_size, 16))
-    text_width = fitz.get_text_length(tag_text, fontname="helv", fontsize=actual_size)
+    text_width = fitz.get_text_length(tag_text, fontname=BOLD_FONT, fontsize=actual_size)
+
+    circle_padding = max(5, actual_size * 0.55)
+    diameter = max(text_width + circle_padding * 2, actual_size * 2.4)
+    box_w = diameter
+    box_h = diameter
     margin = 6
 
     if position == "auto-safe-top":
-        text_x, text_y = _find_safe_top_position(page, tag_text, actual_size)
+        x0, y0 = _find_safe_top_box(page, box_w, box_h)
     else:
         if position == "top-left":
-            text_x = margin
+            x0 = margin
         elif position == "top-center":
-            text_x = (page_rect.width - text_width) / 2
+            x0 = (page_rect.width - box_w) / 2
         else:
-            text_x = page_rect.width - text_width - margin
-        text_y = margin + actual_size
+            x0 = page_rect.width - box_w - margin
+        y0 = margin
+
+    center_x = x0 + diameter / 2
+    center_y = y0 + diameter / 2
+    radius = diameter / 2
+
+    page.draw_circle(
+        (center_x, center_y),
+        radius,
+        color=(0, 0, 0),
+        width=1.3,
+        fill=None,
+        overlay=True,
+    )
+
+    baseline_y = center_y + (actual_size * 0.36)
+    text_x = center_x - text_width / 2
 
     page.insert_text(
-        (text_x, text_y),
+        (text_x, baseline_y),
         tag_text,
         fontsize=actual_size,
-        fontname="helv",
+        fontname=BOLD_FONT,
         color=(0, 0, 0),
         overlay=True,
     )
@@ -175,6 +225,7 @@ def process_pdf(
     mapping: dict[str, list[str]],
     position: str = "auto-safe-top",
     font_size: int = 10,
+    remove_old_tag_box: bool = True,
 ) -> tuple[bytes, list[PageResult]]:
     document = fitz.open(stream=pdf_bytes, filetype="pdf")
     results: list[PageResult] = []
@@ -191,6 +242,9 @@ def process_pdf(
         if not tags:
             results.append(PageResult(index + 1, po, [], "No Excel match"))
             continue
+
+        if remove_old_tag_box:
+            _remove_old_tag_box(page)
 
         _stamp_tag(page, tags, position=position, font_size=font_size)
         results.append(PageResult(index + 1, po, tags, "Matched"))

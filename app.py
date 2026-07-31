@@ -9,7 +9,7 @@ st.title("PO Tag Labeler")
 st.write(
     "Upload the order Excel file and the shipping-label PDF. The app matches "
     "each label's REF/PO number to the Excel Cust Po No and prints the matching "
-    "tag number on the label."
+    "tag number in a bold circle on the label."
 )
 
 left, right = st.columns(2)
@@ -18,7 +18,7 @@ with left:
 with right:
     pdf_file = st.file_uploader("2. Upload label PDF", type=["pdf"])
 
-settings_col1, settings_col2 = st.columns(2)
+settings_col1, settings_col2, settings_col3 = st.columns(3)
 with settings_col1:
     position = st.selectbox(
         "Tag position",
@@ -27,19 +27,22 @@ with settings_col1:
     )
 with settings_col2:
     font_size = st.slider("Number font size", min_value=7, max_value=16, value=10)
+with settings_col3:
+    remove_old_tag_box = st.checkbox("Remove old large TAG NO box", value=True)
 
 if st.button("Process Labels", type="primary", use_container_width=True):
     if not excel_file or not pdf_file:
         st.error("Please upload both the Excel file and the PDF.")
     else:
         try:
-            with st.spinner("Matching labels and adding tag numbers..."):
+            with st.spinner("Matching labels and adding circled tag numbers..."):
                 mapping = load_po_tag_map(excel_file.getvalue())
                 output_pdf, results = process_pdf(
                     pdf_file.getvalue(),
                     mapping,
                     position=position,
                     font_size=font_size,
+                    remove_old_tag_box=remove_old_tag_box,
                 )
 
             matched = sum(r.status == "Matched" for r in results)
