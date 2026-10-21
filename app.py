@@ -8,8 +8,8 @@ st.set_page_config(page_title="PO Tag Labeler", page_icon="🏷️", layout="wid
 st.title("PO Tag Labeler")
 st.write(
     "Upload the order Excel file and the shipping-label PDF. The app matches "
-    "each label's REF/PO number to the Excel Cust Po No and prints the matching "
-    "tag number in a bold circle on the label."
+    "FedEx REF/PO values and UPS Purchase No values to the Excel Cust Po No, "
+    "then prints the matching tag number in a bold circle on the label."
 )
 
 left, right = st.columns(2)
@@ -35,7 +35,7 @@ if st.button("Process Labels", type="primary", use_container_width=True):
         st.error("Please upload both the Excel file and the PDF.")
     else:
         try:
-            with st.spinner("Matching labels and adding circled tag numbers..."):
+            with st.spinner("Matching FedEx/UPS labels and adding circled tag numbers..."):
                 mapping = load_po_tag_map(excel_file.getvalue())
                 output_pdf, results = process_pdf(
                     pdf_file.getvalue(),
@@ -45,13 +45,15 @@ if st.button("Process Labels", type="primary", use_container_width=True):
                     remove_old_tag_box=remove_old_tag_box,
                 )
 
-            matched = sum(r.status == "Matched" for r in results)
+            matched = sum(r.status.startswith("Matched") for r in results)
             unmatched = len(results) - matched
+            ups_ocr = sum(r.source == "UPS Purchase No (OCR)" for r in results)
 
-            metric1, metric2, metric3 = st.columns(3)
+            metric1, metric2, metric3, metric4 = st.columns(4)
             metric1.metric("PDF pages", len(results))
             metric2.metric("Matched", matched)
-            metric3.metric("Needs review", unmatched)
+            metric3.metric("UPS OCR matches", ups_ocr)
+            metric4.metric("Needs review", unmatched)
 
             if unmatched:
                 st.warning(
@@ -78,6 +80,7 @@ if st.button("Process Labels", type="primary", use_container_width=True):
                         "Page": r.page_number,
                         "PO / REF": r.po_number or "",
                         "Tag NO": ", ".join(r.tags),
+                        "Read from": r.source,
                         "Status": r.status,
                     }
                     for r in results
